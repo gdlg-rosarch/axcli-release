@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+from actionlib import SimpleActionClient, GoalStatus
+import roslib.message
+import rospy
+import argparse
+import sys
+import yaml
+import rostopic
+import signal
+
+# pretty - A miniature library that provides a Python print and stdout
+# wrapper that makes colored terminal text easier to use (eg. without
+# having to mess around with ANSI escape sequences). This code is public
+# domain - there is no license except that you must leave this header.
+#
+# Copyright (C) 2008 Brian Nez <thedude at bri1 dot com>
+#
+# With modifications
+# (C) 2013 Paul M <pmathieu@willowgarage.com>
+# (C) 2014 Adolfo Rodriguez Tsouroukdissian <adolfo.rodriguez@pal-robotics.com>
+
+codeCodes = {
+    'black':    '0;30', 'bright gray':  '0;37',
+    'blue':     '0;34', 'white':        '1;37',
+    'green':    '0;32', 'bright blue':  '1;34',
+    'cyan':     '0;36', 'bright green': '1;32',
+    'red':      '0;31', 'bright cyan':  '1;36',
+    'purple':   '0;35', 'bright red':   '1;31',
+    'yellow':   '0;33', 'bright purple':'1;35',
+    'dark gray':'1;30', 'bright yellow':'1;33',
+    'normal':   '0'
+}
+
+def printc(text, color, file = sys.stdout):
+    """Print in color."""
+    if ((file == sys.stdout and sys.stdout.isatty()) or
+        (file == sys.stderr and sys.stderr.isatty())):
+        print("\033["+codeCodes[color]+"m"+text+"\033[0m", file = file)
+    else:
+        print(text)
+
+def print_err(msg): printc(msg, 'red', file = sys.stderr)
+def print_ok(msg): printc(msg, 'green')
+
+class DynamicAction(object):
+    class NotFound(Exception):
+        pass
+
+    def __init__(self, name):
+        # remove "Action" string from name
+        assert("Action" in name)
+        self.name     = name[0:len(name)-6]
+        self.action   = self.load_submsg('Action')
+        self.goal     = self.load_submsg('Goal')
+        self.feedback = self.load_submsg('Feedback')
+        self.result   = self.load_submsg('Result')
+
+    def load_submsg(self, subname):
+        msgclass = roslib.message.get_message_class(self.name + subname)
+        if msgclass is None:
+            print_err('Could not load message for: %s'%(self.name+subname))
+            raise DynamicAction.NotFound("message {} was not found"
+                                         .format(self.name + subname))
+        return msgclass
+
+
+    def _fill_msg(self, msg, values):
+        for k, v in values.iteritems():
+            if type(v) is dict:
+                self._fill_msg(getattr(msg, k), v)
+            else:
+                setattr(msg, k, v)
+
+    def fill_goal(self, values):
+        goal = self.goal()
+        self._fill_msg(goal, values)
+        return goal
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Send a goal to an action server')
+    parser.add_argument('action_name', help='name of the action')
+    parser.add_argument('goal', help='contents of the goal')
+    parser.add_argument('--nowait', action='store_true', help="don't wait for result, fire and forget")
+    parser.add_argument('--timeout', type=float, default=0.0,
+                        help='timeout in seconds used to wait for the action server (default: infinite timeout)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='verbose output')
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    rospy.init_node("axclient_cli", anonymous=True)
+    args = parse_args()
+    try:
+        action = rostopic._get_topic_type(rospy.resolve_name(args.action_name)
+                                          + '/goal')[0][:-4]
+        assert(action != 'Action')
+        da = DynamicAction(action)
+    except (TypeError, AssertionError) as e:
+        print_err("action {} was not found".format(args.action_name))
+        sys.exit(1)
+    except DynamicAction.NotFound as e:
+        print_err("action {} could not be loaded".format(action))
+        sys.exit(1)
+    alc = SimpleActionClient(args.action_name, da.action)
+    alc_ok = alc.wait_for_server(rospy.Duration().from_sec(args.timeout))
+    if not alc_ok:
+        print_err("timed-out waiting for action {}".format(args.action_name))
+        sys.exit(1)
+    goal = da.fill_goal(yaml.load(args.goal))
+    alc.send_goal(goal)
+    if args.nowait:
+        if args.verbose: printc('goal sent to action server', 'bright cyan')
+    else:
+        def cancel(signum, frame):
+            alc.cancel_goal()
+            rospy.signal_shutdown("goal canceled")
+        signal.signal(signal.SIGINT, cancel)
+        alc.wait_for_result()
+        if alc.get_state() == GoalStatus.SUCCEEDED:
+          if args.verbose:
+            print_ok("goal finished with state {} and result:".format(GoalStatus.to_string(alc.get_state())))
+            print(alc.get_result())
+        else:
+          if args.verbose:
+             print_err("goal finished with state {} and result:".format(GoalStatus.to_string(alc.get_state())))
+             print(alc.get_result(), file = sys.stderr)
+          else:
+            print_err("goal finished with state {}".format(GoalStatus.to_string(alc.get_state())))
+          sys.exit(1)
