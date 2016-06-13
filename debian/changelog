@@ -1,0 +1,8 @@
+ros-kinetic-axcli (0.1.0-0xenial) xenial; urgency=high
+
+  * Initial release, with colorized output, tab completion and fire&forget option
+  * Contributors: Adolfo Rodriguez Tsouroukdissian, Paul Mathieu
+
+ -- Paul Mathieu <paul.mathieu@pal-robotics.com>  Mon, 31 Mar 2014 07:00:00 -0000
+
+
